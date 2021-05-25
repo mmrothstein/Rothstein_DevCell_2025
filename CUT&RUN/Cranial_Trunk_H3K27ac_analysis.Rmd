@@ -1,0 +1,334 @@
+---
+title: "Analysis of H3K27ac CUT&RUN data from cranial and trunk NCCs"
+author: "Megan Rothstein"
+output:
+  html_document:
+    theme: spacelab
+    toc: yes
+    toc_depth: 2
+    toc_float:
+      collapsed: false
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/data/Megan/TGFB_paper/CUTRUN/peaks/')
+```
+
+
+```{r Loading libraries, include=FALSE}
+library(tidyverse)
+library(DiffBind)
+library(GenomicRanges)
+library(GenomicFeatures)
+library(ChIPseeker)
+library(biomaRt)
+library(ggrepel)
+library(chromVAR)
+library(TFBSTools)
+library(JASPAR2020)
+library(chromVAR)
+library(BSgenome.Ggallus.UCSC.galGal6)
+library(motifmatchr)
+library(pheatmap)
+library(BiocParallel)
+register(BPPARAM = MulticoreParam(workers = 32, progressbar = TRUE))
+```
+
+
+Load Cranial/Trunk CUT&RUN datasets
+
+```{r}
+cranial_1 = read.table("CR_H3K27ac_cranial_1_peaks.narrowPeak")
+cranial_1 = cranial_1 %>% dplyr::select(Chr=V1, Start=V2, End=V3) %>%
+  distinct(Chr,Start,End,.keep_all=TRUE) %>% GRanges()
+
+cranial_2 = read.table("CR_H3K27ac_cranial_2_peaks.narrowPeak")
+cranial_2 = cranial_2 %>% dplyr::select(Chr=V1, Start=V2, End=V3) %>%
+  distinct(Chr,Start,End,.keep_all=TRUE) %>% GRanges()
+
+trunk_1 = read.table("CR_H3K27ac_trunk_1_peaks.narrowPeak")
+trunk_1 = trunk_1 %>% dplyr::select(Chr=V1, Start=V2, End=V3) %>%
+  distinct(Chr,Start,End,.keep_all=TRUE) %>% GRanges()
+
+trunk_2 = read.table("CR_H3K27ac_trunk_2_peaks.narrowPeak")
+trunk_2 = trunk_2 %>% dplyr::select(Chr=V1, Start=V2, End=V3) %>%
+  distinct(Chr,Start,End,.keep_all=TRUE) %>% GRanges()
+chr_list=c("chr1","chr3","chr5","chr7","chr9","chr11","chr13","chr15","chr17","chr19","chr21","chr23","chr25","chr27","chr30","chr32","chrM" ,"chrZ","chr2","chr4","chr6","chr8","chr10","chr12","chr14","chr16","chr18","chr20","chr22","chr24","chr26","chr28","chr31","chr33","chrW")
+cranial_1 = cranial_1[seqnames(cranial_1) %in% chr_list]
+cranial_2 = cranial_2[seqnames(cranial_2) %in% chr_list]
+trunk_1 = trunk_1[seqnames(trunk_1) %in% chr_list]
+trunk_2 = trunk_2[seqnames(trunk_2) %in% chr_list]
+
+CT = dba.peakset(NULL, peaks=cranial_1, peak.caller="macs", 
+                  peak.format= "macs", sampID="cranial_1",
+                  factor="C1", condition="cranial", replicate=1, 
+                  bamReads="../bam/galGal6/CR_H3K27ac_cranial_1_galGal6.bam")
+CT = dba.peakset(CT, peaks=cranial_2, peak.caller="macs", 
+                  peak.format= "macs", sampID="cranial_2",
+                  factor="C2", condition="cranial", replicate=2, 
+                  bamReads="../bam/galGal6/CR_H3K27ac_cranial_2_galGal6.bam")
+CT = dba.peakset(CT, peaks=trunk_1, peak.caller="macs", 
+                  peak.format= "macs", sampID="trunk_1",
+                  factor="T1", condition="trunk", replicate=1, 
+                  bamReads="../bam/galGal6/CR_H3K27ac_trunk_1_galGal6.bam")
+CT = dba.peakset(CT, peaks=trunk_2, peak.caller="macs", 
+                  peak.format= "macs", sampID="trunk_2",
+                  factor="T2", condition="trunk", replicate=2, 
+                  bamReads="../bam/galGal6/CR_H3K27ac_trunk_2_galGal6.bam")
+```
+
+
+
+Count reads at peaks
+
+```{r}
+counts_CT = dba.count(CT, minOverlap=1, score=DBA_SCORE_TMM_READS_FULL, bRemoveDuplicates = TRUE)
+counts_CT_df = dba.peakset(counts_CT, bRetrieve=T, DataType=DBA_DATA_FRAME)
+```
+
+
+Differential peak analysis
+
+```{r}
+counts_CT$contrasts=NULL
+CranialMask <- dba.mask(counts_CT, DBA_CONDITION, "cranial")
+TrunkMask <- dba.mask(counts_CT, DBA_CONDITION, "trunk")
+counts_CT <- dba.contrast(counts_CT, group1=CranialMask, group2=TrunkMask, 
+                          name1="cranial", name2="trunk")
+DAPs = dba.analyze(counts_CT, method=DBA_EDGER)
+report = dba.report(DAPs, method = DBA_EDGER, th = 1, bUsePval = FALSE, bNormalized = TRUE, 
+                     bCalled = TRUE, bCounts = TRUE, bCalledDetail = TRUE, 
+                     DataType=DBA_DATA_FRAME)
+
+write.table(report, "Cranial_Trunk_H3K27ac_DifferentialPeaks.txt", sep="\t", quote=FALSE)
+```
+
+
+
+Annotate peaks to genes
+
+
+```{r}
+report.gr = GRanges(dplyr::select(report, Chr, Start, End))
+txdb1 = makeTxDbFromUCSC(genome="galGal6", tablename="ensGene",
+                          circ_seqs="chrM")
+peakAnno = annotatePeak(report.gr, TxDb=txdb1, tssRegion=c(-1000, 200))
+peakAnno.df = as.data.frame(peakAnno)
+ensembl = useEnsembl(biomart = "genes", dataset = "ggallus_gene_ensembl")
+chick_BM = getBM(attributes = c('ensembl_gene_id', 'ensembl_gene_id_version', 
+                     'ensembl_transcript_id', 'ensembl_transcript_id_version', 'external_gene_name', 'entrezgene_id'),
+      mart = ensembl)
+peakAnno.df = merge(peakAnno.df, chick_BM, by.x="geneId", by.y="ensembl_gene_id_version")
+report_anno = inner_join(report[,1:15], peakAnno.df, by=c('Chr'='seqnames', 'Start'='start', 'End'='end'))
+report_anno = distinct(report_anno, Chr, Start, End, .keep_all = T)
+```
+
+
+
+Volcano plot of differentially active peaks
+
+
+```{r}
+volcano = ggplot() + 
+  geom_point(data = dplyr::select(report, Chr, Start, End, Fold, FDR), 
+             aes(x=Fold, y=-log10(FDR)), 
+             fill = "grey60", color = "grey70", alpha=0.3) +
+  geom_point(data = filter(dplyr::select(report, Chr, Start, End, Conc, Fold, FDR), Fold > 1.5 & FDR < 0.05 & Conc>3),
+             aes(x=Fold, y=-log10(FDR)), color="#47499B", alpha=0.5) +
+  geom_point(data = filter(dplyr::select(report, Chr, Start, End, Conc, Fold, FDR), Fold < -1.5 & FDR < 0.05 & Conc>3), 
+             aes(x=Fold, y=-log10(FDR)), 
+             color = "#843657", alpha=0.3) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="HOXA4"), 
+             aes(x=Fold, y=-log10(FDR), label = "HOXA4"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="HOXA3"), 
+             aes(x=Fold, y=-log10(FDR), label = "HOXA3"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="HOXB1"), 
+             aes(x=Fold, y=-log10(FDR), label = "HOXB1"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="HOXD3"), 
+             aes(x=Fold, y=-log10(FDR), label = "HOXD3"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="WNT5B"), 
+             aes(x=Fold, y=-log10(FDR), label = "WNT5B"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="TFAP2D"), 
+             aes(x=Fold, y=-log10(FDR), label = "TFAP2D"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="OTX2"), 
+             aes(x=Fold, y=-log10(FDR), label = "OTX2"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="DMBX1"), 
+             aes(x=Fold, y=-log10(FDR), label = "DMBX1"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & geneId =="ENSGALG00000032696.3"), 
+             aes(x=Fold, y=-log10(FDR), label = "LHX5"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & geneId =="ENSGALG00000032696.3"), 
+             aes(x=Fold, y=-log10(FDR), label = "LHX5"), box.padding = 0.7) +
+  lims(x=c(-6,6), y=c(0.5,25)) +
+  theme_classic() + xlab("Fold Change")
+volcano
+ggsave("CT_volcano.pdf", dpi=400, units = "in", height = 4, width = 4)
+```
+
+
+
+Volcano plot with Smad-bound peaks marked
+
+```{r}
+Smad_peaks = read.table("SMAD23_peaks.bed")
+Smad_peaks = Smad_peaks %>% dplyr::rename(Chr=V1,Start=V2,End=V3) %>% GRanges()
+CT_peaks.gr = GRanges(dplyr::select(counts_CT_df, CHR, START, END))
+CT_peaks_Smad = as.data.frame(subsetByOverlaps(CT_peaks.gr, Smad_peaks, maxgap=200))
+CT_report_Smad= inner_join(report[1:15], CT_peaks_Smad, by=c("Chr"="seqnames", "Start"="start", "End"="end"))
+
+cranial_peaks = filter(dplyr::select(report, Chr, Start, End, Conc, Fold, FDR), Fold > 1.5 & FDR < 0.05 & Conc>3)
+trunk_peaks = filter(dplyr::select(report, Chr, Start, End, Conc, Fold, FDR), Fold < -1.5 & FDR < 0.05 & Conc>3)
+
+volcano_Smad = ggplot() + 
+  geom_point(data = dplyr::select(report, Chr, Start, End, Fold, FDR), 
+             aes(x=Fold, y=-log10(FDR)), 
+             fill = "grey60", color = "grey70", alpha=0.2) +
+  geom_point(data = cranial_peaks,
+             aes(x=Fold, y=-log10(FDR)), color="#47499B", alpha=0.3) +
+  geom_point(data = trunk_peaks, 
+             aes(x=Fold, y=-log10(FDR)), 
+             color = "#843657", alpha=0.3) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="HOXA4"), 
+             aes(x=Fold, y=-log10(FDR), label = "HOXA4"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="HOXA3"), 
+             aes(x=Fold, y=-log10(FDR), label = "HOXA3"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="HOXB1"), 
+             aes(x=Fold, y=-log10(FDR), label = "HOXB1"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="HOXD3"), 
+             aes(x=Fold, y=-log10(FDR), label = "HOXD3"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="WNT5B"), 
+             aes(x=Fold, y=-log10(FDR), label = "WNT5B"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="TFAP2D"), 
+             aes(x=Fold, y=-log10(FDR), label = "TFAP2D"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="OTX2"), 
+             aes(x=Fold, y=-log10(FDR), label = "OTX2"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="DMBX1"), 
+             aes(x=Fold, y=-log10(FDR), label = "DMBX1"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & geneId =="ENSGALG00000032696.3"), 
+             aes(x=Fold, y=-log10(FDR), label = "LHX5"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & geneId =="ENSGALG00000032696.3"), 
+             aes(x=Fold, y=-log10(FDR), label = "LHX5"), box.padding = 0.7) +
+  geom_point(data = inner_join(CT_report_Smad, cranial_peaks, by=c("Chr","Start","End")), 
+             aes(x=Fold.x, y=-log10(FDR.x)), shape=4) +
+  geom_point(data = inner_join(CT_report_Smad, trunk_peaks, by=c("Chr","Start","End")), 
+             aes(x=Fold.x, y=-log10(FDR.x)), shape=4) +
+  lims(x=c(-6,6), y=c(0.5,25)) +
+  theme_classic() + xlab("Fold Change")
+volcano_Smad
+ggsave("volcano_Smad.pdf", dpi=400, units = "in", height = 4, width = 4)
+
+```
+
+
+Volcano plot with Smad-bound peaks marked
+
+```{r}
+GSC_peaks = read.table("/data/Megan/Node_scATAC/gsc_cluster_peaks.bed")
+GSC_peaks = GSC_peaks %>% dplyr::rename(Chr=V1,Start=V2,End=V3) %>% GRanges()
+CT_peaks.gr = GRanges(dplyr::select(counts_CT_df, CHR, START, END))
+CT_peaks_GSC = as.data.frame(subsetByOverlaps(CT_peaks.gr, GSC_peaks, maxgap=200))
+CT_report_GSC = inner_join(report[1:15], CT_peaks_GSC, by=c("Chr"="seqnames", "Start"="start", "End"="end"))
+
+cranial_peaks = filter(dplyr::select(report, Chr, Start, End, Conc, Fold, FDR), Fold > 1.5 & FDR < 0.05 & Conc>3)
+trunk_peaks = filter(dplyr::select(report, Chr, Start, End, Conc, Fold, FDR), Fold < -1.5 & FDR < 0.05 & Conc>3)
+
+volcano_GSC = ggplot() + 
+  geom_point(data = dplyr::select(report, Chr, Start, End, Fold, FDR), 
+             aes(x=Fold, y=-log10(FDR)), 
+             fill = "grey60", color = "grey70", alpha=0.2) +
+  geom_point(data = cranial_peaks,
+             aes(x=Fold, y=-log10(FDR)), color="#47499B", alpha=0.3) +
+  geom_point(data = trunk_peaks, 
+             aes(x=Fold, y=-log10(FDR)), 
+             color = "#843657", alpha=0.3) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="HOXA4"), 
+             aes(x=Fold, y=-log10(FDR), label = "HOXA4"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="HOXA3"), 
+             aes(x=Fold, y=-log10(FDR), label = "HOXA3"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="HOXB1"), 
+             aes(x=Fold, y=-log10(FDR), label = "HOXB1"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="HOXD3"), 
+             aes(x=Fold, y=-log10(FDR), label = "HOXD3"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold < -1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="WNT5B"), 
+             aes(x=Fold, y=-log10(FDR), label = "WNT5B"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="TFAP2D"), 
+             aes(x=Fold, y=-log10(FDR), label = "TFAP2D"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="OTX2"), 
+             aes(x=Fold, y=-log10(FDR), label = "OTX2"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & external_gene_name =="DMBX1"), 
+             aes(x=Fold, y=-log10(FDR), label = "DMBX1"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & geneId =="ENSGALG00000032696.3"), 
+             aes(x=Fold, y=-log10(FDR), label = "LHX5"), box.padding = 0.7) +
+  geom_text_repel(data = filter(report_anno, Fold > 1.5 & FDR < 0.05 & Conc > 3 & geneId =="ENSGALG00000032696.3"), 
+             aes(x=Fold, y=-log10(FDR), label = "LHX5"), box.padding = 0.7) +
+  geom_point(data = inner_join(CT_report_GSC, cranial_peaks, by=c("Chr","Start","End")), 
+             aes(x=Fold.x, y=-log10(FDR.x)), shape=4) +
+  geom_point(data = inner_join(CT_report_GSC, trunk_peaks, by=c("Chr","Start","End")), 
+             aes(x=Fold.x, y=-log10(FDR.x)), shape=4) +
+  lims(x=c(-6,6), y=c(0.5,25)) +
+  theme_classic() + xlab("Fold Change")
+volcano_GSC
+
+ggsave("volcano_GSC.pdf", dpi=400, units = "in", height = 4, width = 4)
+```
+
+
+
+ChromVar motif analysis
+
+```{r}
+chrom = dba(DAPs, bSummarizedExperiment = T)
+names(chrom@assays) <- c("scores", "RPKM", "counts","cRPKM","cReads")
+chrom = addGCBias(chrom, genome = BSgenome.Ggallus.UCSC.galGal6)
+opts <- list()
+opts["tax_group"] <- "vertebrates"
+opts["collection"] <- "CORE"
+motifs = getMatrixSet(JASPAR2020, opts = opts)
+motif_ix = matchMotifs(motifs, chrom, genome = BSgenome.Ggallus.UCSC.galGal6)
+dev = computeDeviations(chrom, motif_ix)
+dev@NAMES <- paste0(dev@NAMES,"_",TFBSTools::name(motifs))
+variability <- computeVariability(dev)
+plotVariability(variability, n = 20, use_plotly = F)
+ggsave("chromVAR_Variability.pdf", width = 5, height = 3)
+```
+
+
+
+Heatmap of top variable motifs
+
+```{r}
+CT_motif=as.data.frame(dev@assays@data$z)
+CT_motif$motif = rownames(CT_motif)
+motif_var=rownames_to_column(variability, var = "motif")
+motif_var=mutate(motif_var, motif=substr(motif_var$motif, 1,8))
+chromVar_motifs = inner_join(CT_motif, motif_var, by=c('motif'))
+chromVar_motifs= column_to_rownames(chromVar_motifs, var = 'name')
+chromVar_motifs=dplyr::select(chromVar_motifs, cranial_1, cranial_2, trunk_1, trunk_2)
+
+vars = filter(motif_var, variability > 12)$name
+colors <- colorRampPalette(c("#ffffff","#47499B"))(250)
+
+pheatmap(chromVar_motifs %>% filter(rownames(chromVar_motifs) %in% vars),
+         cellheight=10,
+         cluster_rows = T, cluster_cols = F, border_color=NA, color = colors,
+          cellwidth = 30)
+pheatmap(chromVar_motifs %>% filter(rownames(chromVar_motifs) %in% vars),
+         cellheight=10, filename = "Chromvar_heatmap.pdf",
+         cluster_rows = T, cluster_cols = F, border_color=NA, color = colors,
+          cellwidth = 30)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
