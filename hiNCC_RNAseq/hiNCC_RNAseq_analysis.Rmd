@@ -1,0 +1,302 @@
+---
+title: "hiNCC RNA-seq analysis"
+author: "Megan Rothstein"
+output:
+  html_document:
+    theme: spacelab
+    toc: yes
+    toc_depth: 2
+    toc_float:
+      collapsed: false
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/data/Megan/TGFB_paper/hiNCC/counts/')
+```
+
+
+```{r load libraries, include=FALSE}
+library(tidyverse)
+library(DESeq2)
+library(pheatmap)
+library(ggrepel)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+```
+
+
+load raw count data
+
+```{r}
+dat = read.table('hiNCC_featureCounts.txt', header=TRUE, sep="\t")
+dat = dplyr::rename(dat,
+             NoInd_1=...bam.RNA_NoInd_1_hg38.bam,
+             NoInd_2=...bam.RNA_NoInd_2_hg38.bam,
+             lowWNT_1=...bam.RNA_lowWNT_1_hg38.bam,
+             lowWNT_2=...bam.RNA_lowWNT_2_hg38.bam,
+             lowWNT_SB4_1=...bam.RNA_lowWNT_SB4_1_hg38.bam,
+             lowWNT_SB4_2=...bam.RNA_lowWNT_SB4_2_hg38.bam,
+             lowWNT_TGFB_1=...bam.RNA_lowWNT_TGFB_1_hg38.bam,
+             lowWNT_TGFB_2=...bam.RNA_lowWNT_TGFB_2_hg38.bam,
+             highWNT_1=...bam.RNA_highWNT_1_hg38.bam,
+             highWNT_2=...bam.RNA_highWNT_2_hg38.bam,
+             highWNT_SB4_1=...bam.RNA_highWNT_SB4_1_hg38.bam,
+             highWNT_SB4_2=...bam.RNA_highWNT_SB4_2_hg38.bam,
+             highWNT_TGFB_1=...bam.RNA_highWNT_TGFB_1_hg38.bam,
+             highWNT_TGFB_2=...bam.RNA_highWNT_TGFB_2_hg38.bam)
+rownames(dat) = dat$Geneid
+human_gene.length = dat$Length
+dat = dplyr::select(dat, highWNT_1, highWNT_2, highWNT_SB4_1, highWNT_SB4_2,
+                    highWNT_TGFB_1, highWNT_TGFB_2, lowWNT_1, lowWNT_2,
+                    lowWNT_SB4_1, lowWNT_SB4_2, lowWNT_TGFB_1, lowWNT_TGFB_2,
+                    NoInd_1, NoInd_2)
+
+dat
+```
+
+
+Filter low counts
+
+```{r}
+keep.exprs <- rowSums(dat>5)>=2
+dat <- dat[keep.exprs,,]
+dim(dat)
+```
+
+
+
+build metadata table
+
+```{r}
+colData = data.frame(row.names=colnames(dat), data=colnames(dat))
+colData = colData %>% mutate(wnt = factor(word(colData$data, sep = "WNT")))
+x= list("control","control","SB4","SB4","TGFB","TGFB","control","control","SB4","SB4","TGFB","TGFB",
+        "noInd","noInd")
+colData =colData %>% mutate(cond = word(x))
+colData = colData %>% mutate(wnt_cond=paste(wnt, cond, sep = '_'))
+colData['NoInd_1', 'wnt_cond'] = 'noInd'
+colData['NoInd_2', 'wnt_cond'] = 'noInd'
+rownames(colData) = colData$data
+colData
+```
+
+
+Make DEseq object and run PCA
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = dat,
+                              colData = colData,
+                              design = ~wnt_cond)
+plotPCA(rlog(dds), intgroup=c("cond")) + ggplot2::theme_classic()
+```
+
+
+Run DESeq
+
+
+```{r}
+dds <- DESeq(dds)
+```
+
+
+Results noInd vs low Wnt
+
+```{r}
+cInd_res = results(dds, contrast=c("wnt_cond", "low_control", "noInd"))
+cInd_res
+cInd_res.Df = as.data.frame(cInd_res)
+cInd_res.Df$gene = rownames(cInd_res.Df)
+
+cranial_NC = filter(cInd_res.Df, log2FoldChange > 3 & padj < 0.05)
+Cranial_stem = filter(cInd_res.Df, log2FoldChange < -3 & padj < 0.05)
+
+
+x= list("SOX5","SOX6","TFAP2B","TFAP2A","ZEB1","ZEB2","SNAI2","MSX1","PAX3","PAX7")
+y= list("NANOG","POU5F1")
+
+cranial_ESC_NC_volcano=ggplot(cInd_res.Df, aes(x=log2FoldChange, y=-log2(padj))) + 
+  theme_classic() +
+  geom_point(color = "gray", alpha = 0.3) +
+  geom_point(data=cranial_NC, color = "#47499B", alpha = 0.5) +
+  geom_point(data=Cranial_stem, color = "#6C8E43", alpha = 0.5) +
+  geom_text_repel(data = filter(cInd_res.Df, gene %in% x), aes(label=gene), 
+                  box.padding = 0.7, xlim = c(5, NA), max.overlaps=50) +
+  geom_text_repel(data = filter(cInd_res.Df, gene %in% y), aes(label=gene), 
+                  box.padding = 0.7, xlim = c(NA, -5), max.overlaps=50)
+cranial_ESC_NC_volcano
+ggsave("cranial_ESC_NC_volcano.pdf", dpi=400, width = 4, height = 4, useDingbats=FALSE, device = 'pdf', units="in")
+```
+
+
+
+Results noInd vs high Wnt
+
+```{r}
+tInd_res = results(dds, contrast=c("wnt_cond", "high_control", "noInd"))
+tInd_res.Df = as.data.frame(tInd_res)
+tInd_res.Df$gene = rownames(tInd_res.Df)
+
+trunk_NC = filter(tInd_res.Df, log2FoldChange > 3 & padj < 0.05)
+trunk_stem = filter(tInd_res.Df, log2FoldChange < -3 & padj < 0.05)
+
+x= list("SOX5","SOX6","ZEB1","ZEB2","SNAI2","MSX1","PAX3","PAX7")
+y= list("NANOG","POU5F1")
+
+trunk_ESC_NC_volcano=ggplot(tInd_res.Df, aes(x=log2FoldChange, y=-log2(padj))) + 
+  theme_classic() +
+  geom_point(color = "gray", alpha = 0.3) +
+  geom_point(data=trunk_NC, color = "#843657", alpha = 0.5) +
+  geom_point(data=trunk_stem, color = "#6C8E43", alpha = 0.5) +
+  geom_text_repel(data = filter(tInd_res.Df, gene %in% x), aes(label=gene), 
+                  box.padding = 0.7, xlim = c(5, NA), max.overlaps=50) +
+  geom_text_repel(data = filter(tInd_res.Df, gene %in% y), aes(label=gene), 
+                  box.padding = 0.7, xlim = c(NA, -5), max.overlaps=50)
+trunk_ESC_NC_volcano
+ggsave("trunk_ESC_NC_volcano.pdf", dpi=400, width = 4, height = 4, useDingbats=FALSE, device = 'pdf', units="in")
+```
+
+
+
+Results low Wnt vs lowWnt + TGFb
+
+```{r}
+cTGF_res = results(dds, contrast=c("wnt_cond", "low_TGFB", "low_control"))
+cTGF_res.Df = as.data.frame(cTGF_res)
+cTGF_res.Df$gene = rownames(cTGF_res.Df)
+
+cTGFup = filter(cTGF_res.Df, log2FoldChange > 3 & padj < 0.05)
+cTGFdown = filter(cTGF_res.Df, log2FoldChange < -3 & padj < 0.05)
+
+x= list("DMBX1","LHX5","OTX2","ETS1","GSC","EOMES","NODAL","POU5F1")
+
+cranial_cont_TGFb_volcano=ggplot(cTGF_res.Df, aes(x=log2FoldChange, y=-log2(padj))) + 
+  theme_classic() +
+  geom_point(color = "gray", alpha = 0.5) +
+  geom_point(data=cTGFdown, color = "#843657", alpha = 0.5) +
+  geom_point(data=cTGFup, color = "#47499B", alpha = 0.5) +
+  geom_text_repel(data = filter(cTGF_res.Df, gene %in% x), aes(label=gene), 
+                  box.padding = 1, xlim = c(5, NA))
+cranial_cont_TGFb_volcano
+ggsave("cranial_cont_TGFb_volcano.pdf", dpi=400, width = 4, height = 4, useDingbats=FALSE, device = 'pdf', units="in")
+```
+
+
+
+
+```{r}
+tTGF_res = results(dds, contrast=c("wnt_cond", "high_TGFB", "high_control"))
+tTGF_res.Df = as.data.frame(tTGF_res)
+tTGF_res.Df$gene = rownames(tTGF_res.Df)
+
+tTGFup = filter(tTGF_res.Df, log2FoldChange > 3 & padj < 0.05)
+tTGFdown = filter(tTGF_res.Df, log2FoldChange < -3 & padj < 0.05)
+
+x= list("DMBX1","LHX5","OTX2","ETS1","GSC","EOMES","NODAL","POU5F1")
+
+trunk_cont_TGFb_volcano= ggplot(tTGF_res.Df, aes(x=log2FoldChange, y=-log2(padj))) + 
+  theme_classic() +
+  geom_point(color = "gray", alpha = 0.5) +
+  geom_point(data=tTGFup, color = "#47499B", alpha = 0.5) +
+  geom_point(data=tTGFdown, color = "#843657", alpha = 0.5)
+trunk_cont_TGFb_volcano
+
+ggsave("trunk_cont_TGFb_volcano.pdf", dpi=400, width = 4, height = 4, useDingbats=FALSE, device = 'pdf', units="in")
+```
+
+
+
+
+```{r}
+wnt_res = results(dds, contrast=c("wnt_cond", "low_control", "high_control"))
+wnt_res.Df = as.data.frame(wnt_res)
+wnt_res.Df$gene = rownames(wnt_res.Df)
+cranial = filter(wnt_res.Df, log2FoldChange > 3 & padj < 0.1)
+trunk = filter(wnt_res.Df, log2FoldChange < -3 & padj < 0.1)
+
+cSB4_res = results(dds, contrast=c("wnt_cond", "low_SB4", "low_control"))
+cSB4_res.Df = as.data.frame(cSB4_res)
+cSB4_res.Df$gene = rownames(cSB4_res.Df)
+cSB4up = filter(cSB4_res.Df, log2FoldChange > 3 & padj < 0.05)
+cSB4down = filter(cSB4_res.Df, log2FoldChange < -3 & padj < 0.05)
+
+tSB4_res = results(dds, contrast=c("wnt_cond", "high_SB4", "high_control"))
+tSB4_res.Df = as.data.frame(tSB4_res)
+tSB4_res.Df$gene = rownames(tSB4_res.Df)
+tSB4up = filter(tSB4_res.Df, log2FoldChange > 3 & padj < 0.05)
+tSB4down = filter(tSB4_res.Df, log2FoldChange < -3 & padj < 0.05)
+```
+
+
+Calculate rlog normalized counts across conditions
+
+```{r}
+rld <- rlog(dds, blind=FALSE)
+rld <- as.data.frame(assay(rld))
+rld$gene=row.names(rld)
+
+rld=mutate(rld, 
+       highWNT_Av = (highWNT_1 + highWNT_2)/2,
+       lowWNT_Av = (lowWNT_1 + lowWNT_2)/2, 
+       lowWNT_TGFB_Av = (lowWNT_TGFB_1 + lowWNT_TGFB_2)/2, 
+       highWNT_TGFB_Av = (highWNT_TGFB_1 + highWNT_TGFB_2)/2, 
+       highWNT_SB4_Av = (highWNT_SB4_1 + highWNT_SB4_2)/2, 
+       lowWNT_SB4_Av = (lowWNT_SB4_1 + lowWNT_SB4_2)/2)
+rld=dplyr::select(rld, gene, lowWNT_Av, lowWNT_TGFB_Av, lowWNT_SB4_Av,
+                  highWNT_Av,highWNT_TGFB_Av,highWNT_SB4_Av)
+rld
+```
+
+
+Calculate z-scores for normalized counts
+
+```{r}
+rld_z = cbind(rld[,1], as.data.frame(t((scale(t(rld[,2:7]))))))
+rownames(rld_z) = rld_z[,1]
+rld_z[,1] = NULL
+```
+
+
+Make heatmap
+
+```{r}
+colors <- colorRampPalette(c("#ffffff","#4D6EAC"))(250)
+
+
+rld_z_filt=dplyr::filter(rld_z, rownames(rld_z) %in% cranial$gene &
+                         rownames(rld_z) %in% cTGFup$gene |
+                         rownames(rld_z) %in% cranial$gene & 
+                         rownames(rld_z) %in% cTGFdown$gene | 
+                         rownames(rld_z) %in% trunk$gene & 
+                         rownames(rld_z) %in% tTGFup$gene |
+                         rownames(rld_z) %in% trunk$gene & 
+                         rownames(rld_z) %in% tTGFdown$gene)
+rld_z_filt=rld_z_filt %>% rownames_to_column('gene') %>% 
+  dplyr::filter(gene!="LINC00678" & gene!="LINC01405" &
+                  gene!="LINC00428" & gene!="LINC01197" &
+                  gene!="LINC01090" & gene!="LOC101929194" &
+                  gene!="C9orf135") %>%
+    column_to_rownames('gene')
+
+pheatmap(rld_z_filt, 
+         cluster_rows = T, cluster_cols = F, cutree_rows = 3, border_color=NA, 
+         color = colors, width = 7, height = 10, cellwidth = 15)
+
+pheatmap(rld_z_filt, 
+         cluster_rows = T, cluster_cols = F, cutree_rows = 3, border_color=NA, color = colors, width = 7, height = 10,
+         cellwidth = 30, filename = "hiNCC_heatmap.pdf")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

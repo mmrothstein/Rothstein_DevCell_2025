@@ -1,0 +1,96 @@
+
+SAMPLES = ["RNA_NoInd_1", "RNA_NoInd_2", "RNA_lowWNT_1", "RNA_lowWNT_2", "RNA_lowWNT_SB4_1", "RNA_lowWNT_SB4_2", "RNA_lowWNT_TGFB_1", "RNA_lowWNT_TGFB_2", "RNA_highWNT_1", "RNA_highWNT_2", "RNA_highWNT_SB4_1", "RNA_highWNT_SB4_2", "RNA_highWNT_TGFB_1", "RNA_highWNT_TGFB_2"]
+
+rule all:
+        input:
+                expand("fastq/{sample}_R1_fastqc.html", sample=SAMPLES),
+                expand("trimmed_fastq/trimmed_{sample}_R1.fastq.gz", sample=SAMPLES),
+                expand("bam/{sample}_hg38.bam", sample=SAMPLES),
+                expand("bam/{sample}_hg38.bam.bai", sample=SAMPLES)
+
+
+rule fastqc:
+	input:
+		R1="fastq/{sample}_R1.fastq.gz",
+		R2="fastq/{sample}_R2.fastq.gz"
+	output:
+		R1="fastq/{sample}_R1_fastqc.html",
+		R2="fastq/{sample}_R2_fastqc.html"
+	threads: 8
+	shell:
+		"fastqc {input} -t {threads}"
+
+
+rule cutadapt:
+	input:
+		R1="fastq/{sample}_R1.fastq.gz",
+		R2="fastq/{sample}_R2.fastq.gz"
+	output:
+		R1="trimmed_fastq/trimmed_{sample}_R1.fastq.gz",
+		R2="trimmed_fastq/trimmed_{sample}_R2.fastq.gz"
+	log:
+		"logs/cutadapt/{sample}.log"
+	threads: 8
+	shell:
+		"cutadapt -a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA \
+		-A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT \
+		--minimum-length=25 \
+		--cores={threads} \
+		{input.R1} \
+		{input.R2} \
+		-o {output.R1} \
+		-p {output.R2} 2> {log}"
+
+
+rule hisat2:
+        input:
+            R1="trimmed_fastq/trimmed_{sample}_R1.fastq.gz",
+            R2="trimmed_fastq/trimmed_{sample}_R2.fastq.gz"
+        output:
+            bam="bam/{sample}_hg38.bam"
+        log:
+            "logs/hisat2/{sample}_hg38.log"
+        threads: 16
+        shell:
+        	"hisat2 \
+        	-p {threads} \
+        	--phred33 \
+        	--rna-strandness R \
+        	--no-unal \
+        	-1 {input.R1} \
+        	-2 {input.R2} \
+        	-x /data/Megan/genome_data/hg38_UCSC/Homo_sapiens/UCSC/hg38/Sequence/HISAT2Index/hg38/genome \
+        	2> {log} | samtools view -bh - | samtools sort -T {wildcards.sample}_hg38 - -o {output.bam}"
+
+
+rule index:
+        input:
+                "bam/{sample}_hg38.bam"
+        output:
+                "bam/{sample}_hg38.bam.bai"
+        shell:
+                "samtools index {input}"
+
+
+rule featurecounts:
+        input:
+                "bam/{sample}_hg38.bam"
+        output:
+                "counts/ensGene_featureCounts.txt"
+        threads: 8
+        shell:
+                "featureCounts \
+                {input} \
+                -T {threads} \
+                -p \
+                -t exon \
+                -s 2 \
+                -g gene_id \
+                -a /data/Megan/genome_data/hg38_UCSC/Homo_sapiens/UCSC/hg38/Annotation/Genes/genes.gtf \
+                -o {output}"
+
+
+
+
+
+
