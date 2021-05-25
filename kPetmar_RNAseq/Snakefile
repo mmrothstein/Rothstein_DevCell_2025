@@ -1,0 +1,55 @@
+
+SAMPLES = ['PmCranial_R1', 'PmCranial_R2', 'PmTrunk_R1', 'PmTrunk_R2']
+
+rule all:
+	input:
+		expand("trimmed_fastq/trimmed_{sample}.fastq.gz", sample=SAMPLES),
+		expand("bam/{sample}_kpetMar1.bam", sample=SAMPLES),
+		expand("bam/{sample}_kpetMar1.bam.bai", sample=SAMPLES)
+
+
+rule cutadapt:
+	input:
+		"fastq/{sample}.fastq.gz"
+	output:
+		"trimmed_fastq/trimmed_{sample}.fastq.gz"
+	log:
+		"logs/cutadapt/{sample}.log"
+	threads: 8
+	shell:
+		"cutadapt -a AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC \
+		--minimum-length=25 \
+		--cores={threads} \
+		{input} \
+		-o {output} 2> {log}"
+
+
+rule hisat2:
+	input:
+		"trimmed_fastq/trimmed_{sample}.fastq.gz"
+	output:
+		bam="bam/{sample}_kpetMar1.bam"
+	log:
+		"logs/hisat2/{sample}_kpetMar1.log"
+	threads: 16
+	shell:
+		"hisat2 \
+    	-p {threads} \
+    	--phred33 \
+    	--no-unal \
+    	-x /data/Megan/Lamprey_CT/kPetMar1_ht2/kPetMar1_genome \
+        -U {input} \
+        2> {log} | samtools view -bh - | samtools sort -T {wildcards.sample}_kpetMar1 - -o {output.bam}"
+
+
+rule index_kPetMar1:
+	input:
+		"bam/{sample}_kpetMar1.bam"
+	output:
+		"bam/{sample}_kpetMar1.bam.bai"
+	shell:
+		"samtools index {input}"
+
+
+
+
