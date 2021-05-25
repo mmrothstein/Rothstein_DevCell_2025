@@ -1,0 +1,104 @@
+---
+title: "Analysis of Chick Cranial/Trunk RNA-seq datasets"
+author: "Megan Rothstein"
+output:
+  html_document:
+    theme: spacelab
+    toc: yes
+    toc_depth: 2
+    toc_float:
+      collapsed: false
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/data/Megan/TGFB_paper/RNAseq/counts/')
+```
+
+
+```{r}
+library(tidyverse)
+library(DESeq2)
+library(biomaRt)
+```
+
+
+load raw count data 
+
+```{r}
+galGal6 = read.table("Cranial_Trunk_ensGene_featureCounts.txt", header=T)
+galGal6 = galGal6 %>% dplyr::select(Geneid, Chr, Start, End, Strand, Length,
+              cranial_1=...bam.galGal6.ggcranial_rep1_galGal6.bam,
+              cranial_2=...bam.galGal6.ggcranial_rep2_galGal6.bam,
+              cranial_3=...bam.galGal6.ggcranial_rep3_galGal6.bam,
+              trunk_1=...bam.galGal6.ggtrunk_rep1_galGal6.bam,
+              trunk_2=...bam.galGal6.ggtrunk_rep2_galGal6.bam,
+              trunk_3=...bam.galGal6.ggtrunk_rep3_galGal6.bam)
+```
+
+
+Make metadata table
+
+```{r}
+rownames(galGal6) = galGal6$Geneid
+galGal6 = galGal6[,7:12]
+DESeq_design = data.frame(row.names = colnames(galGal6),
+           condition = c("C","C","C","T","T","T"),
+           libType = c("single","single","single","single","single","single"))
+DESeq_design
+```
+
+
+Make DESeq dataset
+
+```{r}
+galGal6_dds = DESeqDataSetFromMatrix(countData = galGal6,
+                              colData = DESeq_design,
+                              design = ~condition)
+galGal6_dds$condition = factor(galGal6_dds$condition, levels = c("T","C"))
+galGal6_dds
+```
+
+
+Run DESeq
+
+```{r}
+galGal6_dds = DESeq(galGal6_dds)
+galGal6_res = results(galGal6_dds)
+galGal6_resDf = as.data.frame(galGal6_res)
+```
+
+
+Merge with chick gene symbols
+
+```{r}
+ensembl = useEnsembl(biomart = "genes", dataset = "ggallus_gene_ensembl")
+chick_BM = getBM(attributes = c('ensembl_gene_id', 'ensembl_gene_id_version', 
+                     'ensembl_transcript_id', 'ensembl_transcript_id_version', 'external_gene_name', 'entrezgene_id'),
+      mart = ensembl)
+galGal6_resDf$ensembl_gene_id_version = rownames(galGal6_resDf)
+galGal6_resDf = inner_join(galGal6_resDf, chick_BM, by="ensembl_gene_id_version") %>% 
+  distinct(ensembl_gene_id_version, .keep_all = T)
+```
+
+
+Volcano plot of Node gene set
+
+```{r}
+node_genes = list("GSC","CHRD","DKK1","CNOT2","OTX2","FOXA2","LHX1","EOMES","HHEX","SFRP1","SHH",
+        "CRHR1","ADMP","FZD5","LBH","SPRY1","NODAL","GATA4","LMX1A","SMAD9","GMDS",
+        "SPATA5","MAP4K4","TRABD2B","SH3PXD2A","LDLRAD3","PLEKHM3","P4HTM","LPP")
+galGal6_volcano = ggplot(galGal6_resDf, aes(x=log2FoldChange, y=-log10(pvalue))) + 
+  theme_classic() +
+  geom_point(color = "gray", alpha = 0.3) +
+  geom_point(data = filter(galGal6_resDf, external_gene_name %in% node_genes), color="#501889", size=2) +
+  geom_text_repel(data = filter(galGal6_resDf, external_gene_name %in% node_genes), 
+                  aes(label=external_gene_name), box.padding = 0.75, max.overlaps=100)
+galGal6_volcano
+ggsave("galGal6_volcano.pdf", width=4.5, height = 4)
+```
+
+
+
+
