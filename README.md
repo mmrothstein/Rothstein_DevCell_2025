@@ -1,4 +1,4 @@
-# TGFB_paper
+# TGF-β signaling controls neural crest developmental plasticity via SMAD2/3
 Code repository for manuscript entitled 'TGF-β signaling controls neural crest developmental plasticity via SMAD2/3'
 
 This repository contains data processing pipelines and additional anaylyses for the following projects:
